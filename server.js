@@ -24,106 +24,120 @@ app.get('/proxy-image', async (req, res) => {
       return res.status(400).json({ error: 'Token parameter is required' });
     }
 
+    console.log('Attempting to fetch:', url);
+
     // Try different authentication methods for Monday.com
     let response;
     let lastError;
 
-    // Method 1: Bearer token
+    // Method 1: Monday.com API approach - get file info first
     try {
-      response = await fetch(url, {
+      // First, try to get file info via Monday.com API
+      const apiResponse = await fetch('https://api.monday.com/v2', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          query: `query { 
+            assets(ids: []) { 
+              id 
+              name 
+              url 
+              file_extension 
+              created_at 
+            } 
+          }`
+        })
+      });
+
+      if (apiResponse.ok) {
+        const apiData = await apiResponse.json();
+        console.log('Monday.com API response:', apiData);
+      }
+    } catch (apiError) {
+      console.log('Monday.com API failed:', apiError.message);
+    }
+
+    // Method 2: Direct image access with proper headers
+    const authMethods = [
+      {
+        name: 'Bearer with cookies',
         headers: {
           'Authorization': `Bearer ${token}`,
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
           'Accept-Language': 'en-US,en;q=0.9',
           'Referer': 'https://mtdcnc.monday.com/',
-          'Origin': 'https://mtdcnc.monday.com'
+          'Origin': 'https://mtdcnc.monday.com',
+          'Sec-Fetch-Dest': 'image',
+          'Sec-Fetch-Mode': 'cors',
+          'Sec-Fetch-Site': 'same-origin'
         }
-      });
-      
-      if (response.ok) {
-        console.log('Success with Bearer token');
-      } else {
-        lastError = `Bearer token failed: ${response.status}`;
-        throw new Error(lastError);
+      },
+      {
+        name: 'Session-based',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Referer': 'https://mtdcnc.monday.com/',
+          'Cookie': `auth_token=${token}` // Try token as cookie
+        }
+      },
+      {
+        name: 'Query parameter',
+        url: `${url}${url.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+          'Referer': 'https://mtdcnc.monday.com/'
+        }
       }
-    } catch (error) {
-      console.log('Bearer token method failed:', error.message);
-      
-      // Method 2: API key in header
+    ];
+
+    for (const method of authMethods) {
       try {
-        response = await fetch(url, {
-          headers: {
-            'Authorization': token,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://mtdcnc.monday.com/',
-            'Origin': 'https://mtdcnc.monday.com'
-          }
+        console.log(`Trying method: ${method.name}`);
+        
+        response = await fetch(method.url || url, {
+          headers: method.headers,
+          redirect: 'manual' // Don't follow redirects to login page
         });
+
+        console.log(`${method.name} - Status: ${response.status}, Content-Type: ${response.headers.get('content-type')}`);
+
+        // Check if we got an actual image (not HTML)
+        const contentType = response.headers.get('content-type');
         
-        if (response.ok) {
-          console.log('Success with direct token');
+        if (response.ok && contentType && contentType.startsWith('image/')) {
+          console.log(`Success with ${method.name} - got image`);
+          break;
+        } else if (response.status === 302 || response.status === 301) {
+          console.log(`${method.name} - Redirect detected (likely to login)`);
+          continue;
+        } else if (contentType && contentType.includes('text/html')) {
+          console.log(`${method.name} - Got HTML (likely login page)`);
+          continue;
         } else {
-          lastError = `Direct token failed: ${response.status}`;
-          throw new Error(lastError);
+          console.log(`${method.name} - Unexpected response`);
+          continue;
         }
-      } catch (error2) {
-        console.log('Direct token method failed:', error2.message);
-        
-        // Method 3: Query parameter
-        try {
-          const urlWithToken = `${url}${url.includes('?') ? '&' : '?'}access_token=${encodeURIComponent(token)}`;
-          response = await fetch(urlWithToken, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-              'Accept-Language': 'en-US,en;q=0.9',
-              'Referer': 'https://mtdcnc.monday.com/',
-              'Origin': 'https://mtdcnc.monday.com'
-            }
-          });
-          
-          if (response.ok) {
-            console.log('Success with query parameter token');
-          } else {
-            lastError = `Query parameter failed: ${response.status}`;
-            throw new Error(lastError);
-          }
-        } catch (error3) {
-          console.log('Query parameter method failed:', error3.message);
-          
-          // Method 4: No auth (sometimes protected_static URLs don't need auth)
-          try {
-            response = await fetch(url, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://mtdcnc.monday.com/',
-                'Origin': 'https://mtdcnc.monday.com'
-              }
-            });
-            
-            if (response.ok) {
-              console.log('Success with no auth');
-            } else {
-              throw new Error(`No auth failed: ${response.status}`);
-            }
-          } catch (error4) {
-            console.log('All methods failed');
-            throw new Error(`All authentication methods failed. Last error: ${error4.message}`);
-          }
-        }
+      } catch (error) {
+        console.log(`${method.name} failed:`, error.message);
+        lastError = error.message;
+        continue;
       }
     }
 
-    if (!response.ok) {
-      return res.status(response.status).json({ 
-        error: 'Failed to fetch image from Monday.com',
-        status: response.status,
-        statusText: response.statusText
+    // If we still don't have a proper image response
+    if (!response || !response.ok || !response.headers.get('content-type')?.startsWith('image/')) {
+      return res.status(403).json({ 
+        error: 'Unable to access image - Monday.com is redirecting to login page',
+        suggestion: 'The API token may not have permission to access this image, or the image requires different authentication',
+        lastError: lastError,
+        receivedContentType: response?.headers.get('content-type')
       });
     }
 
@@ -135,7 +149,7 @@ app.get('/proxy-image', async (req, res) => {
     res.set({
       'Content-Type': contentType,
       'Content-Length': imageBuffer.length,
-      'Cache-Control': 'public, max-age=3600', // Cache for 1 hour
+      'Cache-Control': 'public, max-age=3600',
       'Access-Control-Allow-Origin': '*'
     });
 
